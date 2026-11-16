@@ -143,12 +143,29 @@ bool LoadIdleFrames(const std::string& folder, std::vector<std::unique_ptr<Textu
 		std::string framePath = "..\\_mods\\Character\\" + folder + "\\Animation\\Idle\\idle_";
 		framePath += i < 10 ? "00" : "0";
 		framePath += std::to_string(i) + ".png";
+		if (!std::filesystem::exists(framePath)) return false;
 		std::unique_ptr<Texture> frame = std::make_unique<Texture>();
 		if (FAILED(frame->Load(framePath, true))) return false;
 		loadedFrames.push_back(std::move(frame));
 	}
 	frames = std::move(loadedFrames);
 	return true;
+}
+
+void LoadTalkFrames(const std::string& folder, std::vector<std::unique_ptr<Texture>>& frames)
+{
+	std::vector<std::unique_ptr<Texture>> loadedFrames;
+	for (int i = 0; i < 12; ++i)
+	{
+		std::string framePath = "..\\_mods\\Character\\" + folder + "\\Animation\\Talk\\talk_";
+		framePath += i < 10 ? "00" : "0";
+		framePath += std::to_string(i) + ".png";
+		if (!std::filesystem::exists(framePath)) break;
+		std::unique_ptr<Texture> frame = std::make_unique<Texture>();
+		if (FAILED(frame->Load(framePath, true))) break;
+		loadedFrames.push_back(std::move(frame));
+	}
+	frames = std::move(loadedFrames);
 }
 
 bool ReadCharacterVoiceValue(const std::string& json, const char* key, float& value)
@@ -685,7 +702,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 		DestroyWindow(hWnd);
 		return -1;
 	}
+	std::vector<std::unique_ptr<Texture>> talkFrames;
+	LoadTalkFrames(activeCharacterFolder, talkFrames);
 	size_t lastRegionFrame = idleFrames.size();
+	bool lastRegionSpeaking = false;
 
 	//ImGuiの準備
 	IMGUI_CHECKVERSION();
@@ -754,20 +774,24 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 				//このフレームの描画開始
 				Direct3D::BeginDraw();
 				ImDrawList* drawList = ImGui::GetBackgroundDrawList();
-				const XMFLOAT3 textureSize = idleFrames.front()->GetSize();
+				const bool isSpeaking = Audio::IsMemoryWavPlaying();
+				const std::vector<std::unique_ptr<Texture>>& activeFrames =
+					isSpeaking && !talkFrames.empty() ? talkFrames : idleFrames;
+				const XMFLOAT3 textureSize = activeFrames.front()->GetSize();
 				const float scale = (std::min)(1.0f, (std::min)(
 					static_cast<float>(screenWidth) / textureSize.x,
 					static_cast<float>(screenHeight) / textureSize.y));
 				const ImVec2 imageSize(textureSize.x * scale, textureSize.y * scale);
 				const ImVec2 imagePosition(screenWidth - imageSize.x, screenHeight - imageSize.y);
-				const size_t frameIndex = static_cast<size_t>((GetTickCount64() * animationFps / 1000) % idleFrames.size());
-				if (frameIndex != lastRegionFrame)
+				const size_t frameIndex = static_cast<size_t>((GetTickCount64() * animationFps / 1000) % activeFrames.size());
+				if (frameIndex != lastRegionFrame || isSpeaking != lastRegionSpeaking)
 				{
-					UpdateAlphaWindowRegion(hWnd, *idleFrames[frameIndex], scale, imagePosition);
+					UpdateAlphaWindowRegion(hWnd, *activeFrames[frameIndex], scale, imagePosition);
 					lastRegionFrame = frameIndex;
+					lastRegionSpeaking = isSpeaking;
 				}
 				drawList->AddImage(
-					(ImTextureID)idleFrames[frameIndex]->GetSRV(),
+					(ImTextureID)activeFrames[frameIndex]->GetSRV(),
 					imagePosition,
 					ImVec2(imagePosition.x + imageSize.x, imagePosition.y + imageSize.y));
 
@@ -782,6 +806,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 				{
 					if (LoadIdleFrames(pendingCharacterFolder, idleFrames))
 					{
+						LoadTalkFrames(pendingCharacterFolder, talkFrames);
 						loadedCharacterFolder = pendingCharacterFolder;
 						lastRegionFrame = idleFrames.size();
 						voiceStatus = "キャラクターを切り替えたよ。";

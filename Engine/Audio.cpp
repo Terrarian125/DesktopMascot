@@ -388,6 +388,14 @@ namespace Audio
         return true;
     }
 
+    bool IsMemoryWavPlaying()
+    {
+        if (!memorySourceVoice) return false;
+        XAUDIO2_VOICE_STATE state = {};
+        memorySourceVoice->GetState(&state, XAUDIO2_VOICE_NOSAMPLESPLAYED);
+        return state.BuffersQueued > 0;
+    }
+
     void StopMemoryWav()
     {
         if (memorySourceVoice)

@@ -1,0 +1,11 @@
+{
+  "characterId": "Ankomon",
+  "displayName": "あんこもん",
+  "voice": {
+    "speakerId": 113,
+    "speakerName": "あんこもん / ノーマル",
+    "volume": 1.000000,
+    "speed": 1.000000,
+    "pitch": 0.000000
+  }
+}

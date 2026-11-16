@@ -4,8 +4,8 @@
   "voice": {
     "speakerId": 89,
     "speakerName": "Voidoll / ノーマル",
-    "volume": 1.0,
-    "speed": 1.0,
-    "pitch": 0.0
+    "volume": 1.000000,
+    "speed": 1.000000,
+    "pitch": 0.000000
   }
 }

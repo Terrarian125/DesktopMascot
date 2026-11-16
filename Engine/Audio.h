@@ -26,6 +26,7 @@ namespace Audio
 	//引数：handle	止めたいサウンドの番号
 	void Stop(int ID);
 	bool PlayMemoryWav(const std::vector<unsigned char>& wavData);
+	bool IsMemoryWavPlaying();
 	void StopMemoryWav();
 	
 	//シーンごとの解放（ロードしたサウンドを解放）
