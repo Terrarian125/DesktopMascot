@@ -9,13 +9,17 @@
 #include <windowsx.h>
 #include <dxgi1_2.h>
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <chrono>
 #include <future>
+#include <fstream>
+#include <filesystem>
 #include <memory>
 #include <stdlib.h>
 #include <assert.h>
 #include <string>
+#include <cstdlib>
 #include <time.h>
 #include <vector>
 
@@ -49,6 +53,18 @@ IDXGISwapChain1* settingsSwapChain = nullptr;
 ID3D11RenderTargetView* settingsRenderTarget = nullptr;
 ImGuiContext* settingsImGuiContext = nullptr;
 ImGuiContext* mascotImGuiContext = nullptr;
+std::string characterConfigPath = "..\\_mods\\Character\\MyMascot\\character.json";
+std::string activeCharacterFolder = "MyMascot";
+std::string loadedCharacterFolder = "MyMascot";
+std::string pendingCharacterFolder;
+
+struct CharacterInfo
+{
+	std::string folder;
+	std::string displayName;
+};
+
+std::vector<CharacterInfo> availableCharacters;
 
 
 //プロトタイプ宣言
@@ -79,6 +95,132 @@ void AddJapaneseFont()
 			return;
 		}
 	}
+}
+
+bool ReadJsonStringValue(const std::string& json, const char* key, std::string& value)
+{
+	const size_t keyPosition = json.find(std::string("\"") + key + "\"");
+	if (keyPosition == std::string::npos) return false;
+	const size_t colon = json.find(':', keyPosition);
+	const size_t quote = colon == std::string::npos ? std::string::npos : json.find('"', colon + 1);
+	if (quote == std::string::npos) return false;
+	const size_t endQuote = json.find('"', quote + 1);
+	if (endQuote == std::string::npos) return false;
+	value = json.substr(quote + 1, endQuote - quote - 1);
+	return true;
+}
+
+std::string GetCharacterConfigPath(const std::string& folder)
+{
+	return "..\\_mods\\Character\\" + folder + "\\character.json";
+}
+
+void FindCharacters()
+{
+	availableCharacters.clear();
+	const std::filesystem::path characterRoot("..\\_mods\\Character");
+	std::error_code error;
+	for (std::filesystem::directory_iterator it(characterRoot, error), end; !error && it != end; it.increment(error))
+	{
+		if (!it->is_directory(error)) continue;
+		const std::string folder = it->path().filename().string();
+		std::ifstream file(GetCharacterConfigPath(folder), std::ios::binary);
+		if (!file) continue;
+		const std::string json((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+		std::string displayName;
+		if (!ReadJsonStringValue(json, "displayName", displayName)) displayName = folder;
+		availableCharacters.push_back({ folder, displayName });
+	}
+	std::sort(availableCharacters.begin(), availableCharacters.end(),
+		[](const CharacterInfo& left, const CharacterInfo& right) { return left.displayName < right.displayName; });
+}
+
+bool LoadIdleFrames(const std::string& folder, std::vector<std::unique_ptr<Texture>>& frames)
+{
+	std::vector<std::unique_ptr<Texture>> loadedFrames;
+	for (int i = 0; i < 12; ++i)
+	{
+		std::string framePath = "..\\_mods\\Character\\" + folder + "\\Animation\\Idle\\idle_";
+		framePath += i < 10 ? "00" : "0";
+		framePath += std::to_string(i) + ".png";
+		std::unique_ptr<Texture> frame = std::make_unique<Texture>();
+		if (FAILED(frame->Load(framePath, true))) return false;
+		loadedFrames.push_back(std::move(frame));
+	}
+	frames = std::move(loadedFrames);
+	return true;
+}
+
+bool ReadCharacterVoiceValue(const std::string& json, const char* key, float& value)
+{
+	const size_t voiceStart = json.find("\"voice\"");
+	if (voiceStart == std::string::npos) return false;
+	const size_t voiceEnd = json.find('}', voiceStart);
+	const size_t keyPosition = json.find(std::string("\"") + key + "\"", voiceStart);
+	if (keyPosition == std::string::npos || keyPosition > voiceEnd) return false;
+	const size_t colon = json.find(':', keyPosition);
+	if (colon == std::string::npos || colon > voiceEnd) return false;
+	char* end = nullptr;
+	const float parsed = std::strtof(json.c_str() + colon + 1, &end);
+	if (end == json.c_str() + colon + 1) return false;
+	value = parsed;
+	return true;
+}
+
+bool ReadCharacterVoiceValue(const std::string& json, const char* key, int& value)
+{
+	float parsed = 0.0f;
+	if (!ReadCharacterVoiceValue(json, key, parsed)) return false;
+	value = static_cast<int>(parsed);
+	return true;
+}
+
+bool WriteCharacterVoiceValue(std::string& json, const char* key, const std::string& value)
+{
+	const size_t voiceStart = json.find("\"voice\"");
+	if (voiceStart == std::string::npos) return false;
+	const size_t voiceEnd = json.find('}', voiceStart);
+	const size_t keyPosition = json.find(std::string("\"") + key + "\"", voiceStart);
+	if (keyPosition == std::string::npos || keyPosition > voiceEnd) return false;
+	const size_t colon = json.find(':', keyPosition);
+	if (colon == std::string::npos || colon > voiceEnd) return false;
+	size_t start = colon + 1;
+	while (start < json.size() && std::isspace(static_cast<unsigned char>(json[start]))) ++start;
+	size_t end = start;
+	while (end < json.size() && (std::isdigit(static_cast<unsigned char>(json[end])) ||
+		json[end] == '-' || json[end] == '+' || json[end] == '.' || json[end] == 'e' || json[end] == 'E')) ++end;
+	if (start == end || end > voiceEnd) return false;
+	json.replace(start, end - start, value);
+	return true;
+}
+
+void LoadCharacterVoiceDefaults()
+{
+	std::ifstream file(characterConfigPath, std::ios::binary);
+	if (!file) return;
+	const std::string json((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+	ReadCharacterVoiceValue(json, "speakerId", selectedVoiceId);
+	ReadCharacterVoiceValue(json, "volume", voiceVolume);
+	ReadCharacterVoiceValue(json, "speed", voiceSpeed);
+	ReadCharacterVoiceValue(json, "pitch", voicePitch);
+	voiceVolume = (std::clamp)(voiceVolume, 0.0f, 2.0f);
+	voiceSpeed = (std::clamp)(voiceSpeed, 0.5f, 2.0f);
+	voicePitch = (std::clamp)(voicePitch, -0.15f, 0.15f);
+}
+
+void SaveCharacterVoiceDefaults()
+{
+	std::ifstream input(characterConfigPath, std::ios::binary);
+	if (!input) return;
+	std::string json((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+	input.close();
+	if (!WriteCharacterVoiceValue(json, "speakerId", std::to_string(selectedVoiceId)) ||
+		!WriteCharacterVoiceValue(json, "volume", std::to_string(voiceVolume)) ||
+		!WriteCharacterVoiceValue(json, "speed", std::to_string(voiceSpeed)) ||
+		!WriteCharacterVoiceValue(json, "pitch", std::to_string(voicePitch)))
+		return;
+	std::ofstream output(characterConfigPath, std::ios::binary | std::ios::trunc);
+	if (output) output.write(json.data(), static_cast<std::streamsize>(json.size()));
 }
 
 bool SetRunAtStartup(bool enabled)
@@ -241,7 +383,11 @@ void RenderSettingsWindow(HWND mascotWindow)
 				voiceSpeakers = std::move(result.speakers);
 				const auto selected = std::find_if(voiceSpeakers.begin(), voiceSpeakers.end(),
 					[](const Voicevox::Speaker& speaker) { return speaker.id == selectedVoiceId; });
-				if (selected == voiceSpeakers.end()) selectedVoiceId = voiceSpeakers.front().id;
+				if (selected == voiceSpeakers.end())
+				{
+					selectedVoiceId = voiceSpeakers.front().id;
+					SaveCharacterVoiceDefaults();
+				}
 				voiceStatus = "話者一覧を読み込んだよ。";
 			}
 			else
@@ -264,6 +410,29 @@ void RenderSettingsWindow(HWND mascotWindow)
 	ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
 	ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize, ImGuiCond_Always);
 	ImGui::Begin("設定", nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse);
+	const CharacterInfo* activeCharacter = nullptr;
+	for (const CharacterInfo& character : availableCharacters)
+		if (character.folder == activeCharacterFolder) activeCharacter = &character;
+	const char* activeCharacterName = activeCharacter ? activeCharacter->displayName.c_str() : activeCharacterFolder.c_str();
+	if (ImGui::BeginCombo("キャラクター", activeCharacterName))
+	{
+		for (const CharacterInfo& character : availableCharacters)
+		{
+			const bool isSelected = character.folder == activeCharacterFolder;
+			if (ImGui::Selectable(character.displayName.c_str(), isSelected) && !isSelected)
+			{
+				SaveCharacterVoiceDefaults();
+				activeCharacterFolder = character.folder;
+				characterConfigPath = GetCharacterConfigPath(activeCharacterFolder);
+				LoadCharacterVoiceDefaults();
+				pendingCharacterFolder = activeCharacterFolder;
+				WritePrivateProfileString("CHARACTER", "Folder", activeCharacterFolder.c_str(), ".\\setup.ini");
+				voiceStatus = "キャラクターを切り替えてるよ...";
+			}
+			if (isSelected) ImGui::SetItemDefaultFocus();
+		}
+		ImGui::EndCombo();
+	}
 	bool startAtStartup = startWithWindows;
 	if (ImGui::Checkbox("PC起動時に起動", &startAtStartup))
 	{
@@ -321,6 +490,7 @@ void RenderSettingsWindow(HWND mascotWindow)
 					char value[16];
 					wsprintfA(value, "%d", selectedVoiceId);
 					WritePrivateProfileString("VOICE", "SpeakerId", value, ".\\setup.ini");
+					SaveCharacterVoiceDefaults();
 				}
 				if (isSelected) ImGui::SetItemDefaultFocus();
 			}
@@ -331,18 +501,21 @@ void RenderSettingsWindow(HWND mascotWindow)
 			char value[16];
 			wsprintfA(value, "%d", static_cast<int>(voiceVolume * 1000.0f));
 			WritePrivateProfileString("VOICE", "Volume", value, ".\\setup.ini");
+			SaveCharacterVoiceDefaults();
 		}
 		if (ImGui::SliderFloat("話速", &voiceSpeed, 0.5f, 2.0f, "%.2f"))
 		{
 			char value[16];
 			wsprintfA(value, "%d", static_cast<int>(voiceSpeed * 1000.0f));
 			WritePrivateProfileString("VOICE", "Speed", value, ".\\setup.ini");
+			SaveCharacterVoiceDefaults();
 		}
 		if (ImGui::SliderFloat("音高", &voicePitch, -0.15f, 0.15f, "%.2f"))
 		{
 			char value[16];
 			wsprintfA(value, "%d", static_cast<int>(voicePitch * 1000.0f));
 			WritePrivateProfileString("VOICE", "Pitch", value, ".\\setup.ini");
+			SaveCharacterVoiceDefaults();
 		}
 		if (!voiceTask.valid() && ImGui::Button("テスト再生"))
 		{
@@ -468,6 +641,16 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 	voiceVolume = (std::clamp)(static_cast<int>(GetPrivateProfileInt("VOICE", "Volume", 1000, ".\\setup.ini")) / 1000.0f, 0.0f, 2.0f);
 	voiceSpeed = (std::clamp)(static_cast<int>(GetPrivateProfileInt("VOICE", "Speed", 1000, ".\\setup.ini")) / 1000.0f, 0.5f, 2.0f);
 	voicePitch = (std::clamp)(static_cast<int>(GetPrivateProfileInt("VOICE", "Pitch", 0, ".\\setup.ini")) / 1000.0f, -0.15f, 0.15f);
+	FindCharacters();
+	char characterFolder[260] = {};
+	GetPrivateProfileStringA("CHARACTER", "Folder", "MyMascot", characterFolder, sizeof(characterFolder), ".\\setup.ini");
+	activeCharacterFolder = characterFolder;
+	if (std::none_of(availableCharacters.begin(), availableCharacters.end(),
+		[&](const CharacterInfo& character) { return character.folder == activeCharacterFolder; }) && !availableCharacters.empty())
+		activeCharacterFolder = availableCharacters.front().folder;
+	loadedCharacterFolder = activeCharacterFolder;
+	characterConfigPath = GetCharacterConfigPath(activeCharacterFolder);
+	LoadCharacterVoiceDefaults();
 
 
 
@@ -495,23 +678,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
 	//待機のコマを読み込んでおくね
 	std::vector<std::unique_ptr<Texture>> idleFrames;
-	for (int i = 0; i < 12; ++i)
+	if (!LoadIdleFrames(activeCharacterFolder, idleFrames))
 	{
-		std::string framePath = "..\\_mods\\Character\\MyMascot\\Animation\\Idle\\idle_";
-		if (i < 10) framePath += "00";
-		else framePath += "0";
-		framePath += std::to_string(i) + ".png";
-
-		std::unique_ptr<Texture> frame = std::make_unique<Texture>();
-		if (FAILED(frame->Load(framePath, true)))
-		{
-			MessageBoxW(hWnd, L"待機アニメーションの画像を読み込めませんでした。", L"画像読み込みエラー", MB_OK | MB_ICONERROR);
-			idleFrames.clear();
-			Direct3D::Release();
-			DestroyWindow(hWnd);
-			return -1;
-		}
-		idleFrames.push_back(std::move(frame));
+		MessageBoxW(hWnd, L"待機アニメーションの画像を読み込めませんでした。", L"画像読み込みエラー", MB_OK | MB_ICONERROR);
+		Direct3D::Release();
+		DestroyWindow(hWnd);
+		return -1;
 	}
 	size_t lastRegionFrame = idleFrames.size();
 
@@ -606,6 +778,24 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 				//描画終了
 				Direct3D::EndDraw();
 				RenderSettingsWindow(hWnd);
+				if (!pendingCharacterFolder.empty())
+				{
+					if (LoadIdleFrames(pendingCharacterFolder, idleFrames))
+					{
+						loadedCharacterFolder = pendingCharacterFolder;
+						lastRegionFrame = idleFrames.size();
+						voiceStatus = "キャラクターを切り替えたよ。";
+					}
+					else
+					{
+						activeCharacterFolder = loadedCharacterFolder;
+						characterConfigPath = GetCharacterConfigPath(activeCharacterFolder);
+						LoadCharacterVoiceDefaults();
+						WritePrivateProfileString("CHARACTER", "Folder", activeCharacterFolder.c_str(), ".\\setup.ini");
+						voiceStatus = "画像を読めなかったので、前のキャラクターに戻したよ。";
+					}
+					pendingCharacterFolder.clear();
+				}
 
 
 
